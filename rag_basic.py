@@ -89,15 +89,28 @@ def create_rag_chain(_vector_store):
         """),
         ("human", "{question}")
     ])
+
+    def format_docs(docs):
+        return "\n\n".join(doc.page_content for doc in docs)
     
     rag_chain = (
-        {
-            "context": retriever | (lambda docs: "\n\n".join([doc.page_content for doc in docs])),
-            "question": RunnablePassthrough()
-        }
-        | prompt
-        | llm
-        | StrOutputParser()
+        RunnableParallel(
+            docs=retriever,
+            question=RunnablePassthrough(),
+        )
+        | RunnableParallel(
+            answer=(
+                {
+                    "context": lambda x: format_docs(x["docs"]),
+                    "question": lambda x: x["question"],
+                }
+                | prompt
+                | llm
+                | StrOutputParser()
+            ),
+            docs=lambda x: x["docs"],
+        )
+            
     )
     
     return rag_chain
@@ -154,14 +167,22 @@ if prompt := st.chat_input("Tanyakan tentang dokumen..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     
     # Proses dengan RAG
-    with st.chat_message("assistant"):
-        with st.spinner("🔍 Mencari jawaban..."):
-            try:
-                answer = st.session_state.rag_chain.invoke(prompt)
-                st.write(answer)
-                st.session_state.messages.append({"role": "assistant", "content": answer})
-            except Exception as e:
-                st.error(f"❌ Error: {e}")
+with st.chat_message("assistant"):
+    with st.spinner("🔍 Mencari jawaban..."):
+        try:
+            # Ambil dokumen yang paling relevan
+            retriever = st.session_state.vector_store.as_retriever(
+                search_kwargs={"k": 3}
+            )
+
+            docs = retriever.invoke(prompt)
+            st.session_state<last_docs = docs
+
+            # Sementara tampilkan jumlah dokumen
+            st.write(f"Jumlah dokumen ditemukan: {len(docs)}")
+
+        except Exception as e:
+            st.error(f"❌ Error: {e}")
 
 # ============================================
 # TOMBOL RESET
