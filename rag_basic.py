@@ -115,21 +115,24 @@ def create_rag_chain(_vector_store):
         ("human", "{question}")
     ])
 
-    def format_docs(docs):
-       formatted = []
+def format_docs(docs):
+    formatted = []
 
-       for doc in docs:
-           source = os.path.basename(
-               doc.metadata.get("source", "Unknown") 
-           )
-           page = doc.metadata.get("page", 0) + 1
-           formatted.append(
-               f"""
-Source : {source}
-Page : {page}
-Content: {doc.page_content}"""
-           )
-           return "\n\n".join(formatted)
+    for doc in docs:
+        source = os.path.basename(doc.metadata.get("source", "Unknown"))
+        page = doc.metadata.get("page", 0) + 1
+
+        formatted.append(
+            f"""
+Source: {source}
+Page: {page}
+
+Content:
+{doc.page_content}
+"""
+        )
+
+    return "\n\n".join(formatted)
     
     rag_chain = (
         RunnableParallel(
@@ -210,7 +213,7 @@ with st.sidebar:
 
         selected_file = st.selectbox(
             "Search only in:",
-            ["All Documents"] + st.session_state.vector_store.file_names
+            ["All Documents"] + st.session_state.vector_store.files_names
         )
 
 # ============================================
