@@ -85,7 +85,7 @@ def load_and_process_documents(uploaded_files):
     )
     vector_store.chunk_count = len(all_chunks)
 
-    vector_store.files_names = list (
+    vector_store.file_names = list (
         {
             chunk.metadata["source"]
             for chunk in all_chunks
@@ -101,40 +101,29 @@ def create_rag_chain(_vector_store):
         temperature=0.3,
         api_key=GROQ_API_KEY
     )
-    
+
     retriever = _vector_store.as_retriever(search_kwargs={"k": 3})
-    
+
     prompt = ChatPromptTemplate.from_messages([
         ("system", """Anda adalah asisten AI yang membantu menjawab pertanyaan berdasarkan dokumen yang disediakan.
-        
-        Gunakan KONTEKS berikut untuk menjawab pertanyaan. Jika tidak tahu, katakan "Saya tidak menemukan informasi itu dalam dokumen."
-        
-        KONTEKS:
-        {context}
-        """),
+
+Gunakan KONTEKS berikut untuk menjawab pertanyaan. Jika tidak tahu, katakan "Saya tidak menemukan informasi itu dalam dokumen."
+
+KONTEKS:
+{context}
+"""),
         ("human", "{question}")
     ])
 
-def format_docs(docs):
-    formatted = []
+    def format_docs(docs):
+        formatted=[]
+        for doc in docs:
+            source=os.path.basename(doc.metadata.get("source","Unknown"))
+            page=doc.metadata.get("page",0)+1
+            formatted.append(f"Source: {source}\nPage: {page}\n\nContent:\n{doc.page_content}")
+        return "\n\n".join(formatted)
 
-    for doc in docs:
-        source = os.path.basename(doc.metadata.get("source", "Unknown"))
-        page = doc.metadata.get("page", 0) + 1
-
-        formatted.append(
-            f"""
-Source: {source}
-Page: {page}
-
-Content:
-{doc.page_content}
-"""
-        )
-
-    return "\n\n".join(formatted)
-    
-    rag_chain = (
+    rag_chain=(
         RunnableParallel(
             docs=retriever,
             question=RunnablePassthrough(),
@@ -151,9 +140,7 @@ Content:
             ),
             docs=lambda x: x["docs"],
         )
-            
     )
-    
     return rag_chain
 
 # ============================================
@@ -213,7 +200,7 @@ with st.sidebar:
 
         selected_file = st.selectbox(
             "Search only in:",
-            ["All Documents"] + st.session_state.vector_store.files_names
+            ["All Documents"] + st.session_state.vector_store.file_names
         )
 
 # ============================================
