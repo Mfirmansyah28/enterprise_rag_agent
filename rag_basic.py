@@ -167,23 +167,54 @@ if prompt := st.chat_input("Tanyakan tentang dokumen..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     
     # Proses dengan RAG
-with st.chat_message("assistant"):
-    with st.spinner("🔍 Mencari jawaban..."):
-        try:
-            # Ambil dokumen yang paling relevan
-            retriever = st.session_state.vector_store.as_retriever(
-                search_kwargs={"k": 3}
-            )
+    with st.chat_message("assistant"):
+        with st.spinner("🔍 Mencari jawaban..."):
+            try:
+                result = st.session_state.rag_chain.invoke(prompt)
 
-            docs = retriever.invoke(prompt)
-            st.session_state<last_docs = docs
+                answer = result["answer"]
+                docs = result["docs"]
 
-            # Sementara tampilkan jumlah dokumen
-            st.write(f"Jumlah dokumen ditemukan: {len(docs)}")
+                st.write(answer)
+                st.divide()
+                st.subheader("Source Documents")
 
-        except Exception as e:
-            st.error(f"❌ Error: {e}")
+                for i, doc in enumerate(docs, start=1):
+                    page = doc.metadata.get("page", "Unknown")
 
+                    source = doc.metadata.get(
+                        "source",
+                        "Unknown file"
+                    ) 
+
+                    with st.container(border=True):
+                        st.markdown(f"### Source {i}")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.info(f"{os.path.basename(source)}")
+                        st.divider()
+                        with col2:
+                            st.info(f" Page {page + 1}")
+                        st.markdown("---")
+
+                        preview = doc.page_content
+                        if len(preview) > 250:
+                            preview = preview[:250] + "..."
+                        st.write(doc.page_content)
+
+                        st.write(preview)
+                        with st.expander("Show Full Content"):
+                            st.write(doc.page_content)
+
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": answer,
+                })
+
+                st.session_state["last_docs"] = docs
+
+            except Exception as e:
+                st.error(f"❌ Error: {e}")
 # ============================================
 # TOMBOL RESET
 # ============================================
