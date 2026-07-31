@@ -52,6 +52,9 @@ def load_and_process_documents(uploaded_file):
         separators=["\n\n", "\n", " ", ""]
     )
     chunks = text_splitter.split_documents(documents)
+
+    for chunk in chunks:
+        chunk.metadata["source"] = uploaded_file.name
     
     # Buat embeddings & vector store
     embeddings = HuggingFaceEmbeddings(
@@ -91,7 +94,20 @@ def create_rag_chain(_vector_store):
     ])
 
     def format_docs(docs):
-        return "\n\n".join(doc.page_content for doc in docs)
+       formatted = []
+
+       for doc in docs:
+           source = os.path.basename(
+               doc.metadata.get("source", "Unknown") 
+           )
+           page = doc.metadata.get("page", 0) + 1
+           formatted.append(
+               f"""
+Source : {source}
+Page : {page}
+Content: {doc.page_content}"""
+           )
+           return "\n\n".join(formatted)
     
     rag_chain = (
         RunnableParallel(
@@ -174,10 +190,26 @@ if prompt := st.chat_input("Tanyakan tentang dokumen..."):
 
                 answer = result["answer"]
                 docs = result["docs"]
+                
+                num_docs = len(docs)
+
+                if num_docs >=3:
+                    confidence =  "🟢 High"
+
+                elif num_docs == 2:
+                    confidence = "🟡 Medium"
+
+                else:
+                    confidence = "🔴 Low"
 
                 st.write(answer)
-                st.divide()
+                st.caption(f"Confidence : {confidence}")
+                st.divider()
                 st.subheader("Source Documents")
+                st.success(
+                    f"⭐ Best Match : {os.path.basename(docs[0].metadata.get('source', 'Unknown'))}"
+                    f"(Page {docs[0].metadata.get('page', 0) + 1})"
+                )
 
                 for i, doc in enumerate(docs, start=1):
                     page = doc.metadata.get("page", "Unknown")
@@ -188,19 +220,30 @@ if prompt := st.chat_input("Tanyakan tentang dokumen..."):
                     ) 
 
                     with st.container(border=True):
-                        st.markdown(f"### Source {i}")
-                        col1, col2 = st.columns(2)
-                        with col1:
-                            st.info(f"{os.path.basename(source)}")
-                        st.divider()
-                        with col2:
-                            st.info(f" Page {page + 1}")
-                        st.markdown("---")
+                        if i == 1:
+                            st.markdown("### ⭐ Best Match")
 
-                        preview = doc.page_content
-                        if len(preview) > 250:
-                            preview = preview[:250] + "..."
-                        st.write(doc.page_content)
+                        else:
+                            st.markdown(f"### 📄 Source {i}")
+                        col1, col2 = st.columns([3, 1])
+
+                        with col1:
+                            if i == 1:
+                                st.success(f"🏆 {os.path.basename(source)}")
+                            else:
+                                st.info(f"{os.path.basename(source)}")
+                        
+                        with col2:
+                            st.caption("Page")
+                            st.info(f" Page {page + 1}")
+
+                        st.divider()
+
+                        preview = doc.page_content.strip()
+                        if len(preview) > 300:
+                            preview = preview[:300] + "..."
+
+                        st.markdown("**Preview**")
 
                         st.write(preview)
                         with st.expander("Show Full Content"):
