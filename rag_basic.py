@@ -35,40 +35,62 @@ st.markdown("Upload dokumen dan tanyakan apa saja tentang isinya!")
 # FUNGSI RAG
 # ============================================
 @st.cache_resource
-def load_and_process_documents(uploaded_file):
-    """Membaca dan memproses dokumen yang diupload."""
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-        tmp_file.write(uploaded_file.getvalue())
-        tmp_path = tmp_file.name
-    
-    # Load dokumen
-    loader = PyPDFLoader(tmp_path)
-    documents = loader.load()
-    
-    # Chunking
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500,
-        chunk_overlap=50,
-        separators=["\n\n", "\n", " ", ""]
-    )
-    chunks = text_splitter.split_documents(documents)
+def load_and_process_documents(uploaded_files):
+    """Membaca dan memproses semua dokumen yang diupload."""
 
-    for chunk in chunks:
-        chunk.metadata["source"] = uploaded_file.name
-    
-    # Buat embeddings & vector store
+    all_chunks = []
+
+    for uploaded_file in uploaded_files:
+
+        with tempfile.NamedTemporaryFile(
+            delete=False,
+            suffix=".pdf"
+        ) as tmp_file:
+
+            tmp_file.write(uploaded_file.getvalue())
+            tmp_path = tmp_file.name
+
+        # Load PDF
+        loader = PyPDFLoader(tmp_path)
+        documents = loader.load()
+
+        # Chunking
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500,
+            chunk_overlap=50,
+            separators=["\n\n", "\n", " ", ""]
+        )
+
+        chunks = text_splitter.split_documents(documents)
+
+        # Simpan nama file ke metadata
+        for chunk in chunks:
+            chunk.metadata["source"] = uploaded_file.name
+
+        all_chunks.extend(chunks)
+
+        # Hapus file sementara
+        os.unlink(tmp_path)
+
+    # Embedding
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
+
+    # Vector Store
     vector_store = Chroma.from_documents(
-        documents=chunks,
+        documents=all_chunks,
         embedding=embeddings,
         persist_directory="./chroma_db_temp"
     )
-    
-    # Cleanup
-    os.unlink(tmp_path)
-    
+    vector_store.chunk_count = len(all_chunks)
+
+    vector_store.files_names = list (
+        {
+            chunk.metadata["source"]
+            for chunk in all_chunks
+        }
+    )
     return vector_store
 
 @st.cache_resource
@@ -137,25 +159,59 @@ Content: {doc.page_content}"""
 with st.sidebar:
     st.header("📤 Upload Dokumen")
     
-    uploaded_file = st.file_uploader(
+    uploaded_files = st.file_uploader(
         "Pilih file PDF",
         type=['pdf'],
+        accept_multiple_files=True,
         help="Upload file PDF untuk dianalisis"
     )
     
-    if uploaded_file:
+    if uploaded_files:
         with st.spinner("🔄 Memproses dokumen..."):
             try:
-                vector_store = load_and_process_documents(uploaded_file)
+                for file in uploaded_files:
+                    st.info(f"📄 {file.name}")
+                vector_store = load_and_process_documents(uploaded_files)
                 st.session_state.vector_store = vector_store
                 st.session_state.rag_chain = create_rag_chain(vector_store)
-                st.success(f"✅ Dokumen berhasil diproses!")
-                st.info(f"📄 Nama file: {uploaded_file.name}")
+                st.success(f"✅ {len(uploaded_files)} Dokumen berhasil diproses!")
             except Exception as e:
                 st.error(f"❌ Error: {e}")
     
     st.markdown("---")
     st.caption("Dibangun dengan LangChain + Groq + ChromaDB")
+
+    if "vector_store" in st.session_state:
+        st.markdown("---")
+        st.subheader("📊 Statistics")
+
+        st.metric(
+            "PDF Files",
+            len(uploaded_files)
+        )
+
+        st.metric(
+            "Chunks",
+            st.session_state.vector_store.chunk_count
+        )
+
+        st.metric(
+            "Embedding",
+            "MiniLM"
+        )
+
+        st.metric(
+            "LLM",
+            "Llama 3.3 70B"
+        )
+
+        st.markdown("---")
+        st.subheader("📂 Document Filter")
+
+        selected_file = st.selectbox(
+            "Search only in:",
+            ["All Documents"] + st.session_state.vector_store.file_names
+        )
 
 # ============================================
 # MAIN CHAT INTERFACE
@@ -189,7 +245,23 @@ if prompt := st.chat_input("Tanyakan tentang dokumen..."):
                 result = st.session_state.rag_chain.invoke(prompt)
 
                 answer = result["answer"]
-                docs = result["docs"]
+
+                if selected_file == "All Documents":
+                    result = st.session_state.vector_store.similarity_search_with_score (
+                        prompt,
+                        k=3
+                    )
+
+                else:
+                    result = st.session_state.vector_store.similarity_search_with_score(
+                        prompt,
+                        k=3,
+                        filter={
+                            "source": selected_file
+                        }
+                    )
+
+                    docs = [doc for doc, score in result]
                 
                 num_docs = len(docs)
 
@@ -205,13 +277,14 @@ if prompt := st.chat_input("Tanyakan tentang dokumen..."):
                 st.write(answer)
                 st.caption(f"Confidence : {confidence}")
                 st.divider()
+                st.info(f"📂 Search Scope : {selected_file}")
                 st.subheader("Source Documents")
                 st.success(
                     f"⭐ Best Match : {os.path.basename(docs[0].metadata.get('source', 'Unknown'))}"
                     f"(Page {docs[0].metadata.get('page', 0) + 1})"
                 )
 
-                for i, doc in enumerate(docs, start=1):
+                for i, (doc, score) in enumerate (result, start=1):
                     page = doc.metadata.get("page", "Unknown")
 
                     source = doc.metadata.get(
@@ -224,7 +297,12 @@ if prompt := st.chat_input("Tanyakan tentang dokumen..."):
                             st.markdown("### ⭐ Best Match")
 
                         else:
-                            st.markdown(f"### 📄 Source {i}")
+                            st.markdown(f"###  Source {i}")
+
+                            st.metric(
+                                "Similarity Score",
+                                f"{score: .4f}"
+                            )
                         col1, col2 = st.columns([3, 1])
 
                         with col1:
