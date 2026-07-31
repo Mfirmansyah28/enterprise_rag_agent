@@ -1,19 +1,20 @@
 # app.py - Streamlit UI untuk RAG System
-import streamlit as st
 import os
-from dotenv import load_dotenv
+import uuid
 import tempfile
 
+import streamlit as st
+from dotenv import load_dotenv
+
 # LangChain imports
-from langchain_community.document_loaders import PyPDFLoader, TextLoader
+from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough
+from langchain_core.runnables import RunnablePassthrough, RunnableParallel
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnableParallel
+from langchain_community.embeddings import HuggingFaceEmbeddings
 
 # Load environment
 load_dotenv()
@@ -30,6 +31,7 @@ st.set_page_config(
 
 st.title("📚 Enterprise RAG System")
 st.markdown("Upload dokumen dan tanyakan apa saja tentang isinya!")
+
 
 # ============================================
 # FUNGSI RAG
@@ -77,21 +79,25 @@ def load_and_process_documents(uploaded_files):
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
-    # Vector Store
+    persist_dir = os.path.join(
+        tempfile.gettempdir(), f"chroma_db_{uuid.uuid4().hex}"
+    )
+
     vector_store = Chroma.from_documents(
         documents=all_chunks,
         embedding=embeddings,
-        persist_directory="./chroma_db_temp"
+        persist_directory=persist_dir
     )
     vector_store.chunk_count = len(all_chunks)
 
-    vector_store.file_names = list (
+    vector_store.file_names = list(
         {
             chunk.metadata["source"]
             for chunk in all_chunks
         }
     )
     return vector_store
+
 
 @st.cache_resource
 def create_rag_chain(_vector_store):
@@ -105,25 +111,63 @@ def create_rag_chain(_vector_store):
     retriever = _vector_store.as_retriever(search_kwargs={"k": 3})
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system", """Anda adalah asisten AI yang membantu menjawab pertanyaan berdasarkan dokumen yang disediakan.
+        (
+            "system",
+            """
+Anda adalah AI Assistant untuk Enterprise RAG System.
 
-Gunakan KONTEKS berikut untuk menjawab pertanyaan. Jika tidak tahu, katakan "Saya tidak menemukan informasi itu dalam dokumen."
+Jawablah pertanyaan HANYA berdasarkan konteks yang diberikan.
+
+Setiap kali menjawab, WAJIB sebutkan:
+
+- Nama file
+- Nomor halaman
+
+Contoh:
+
+"Berdasarkan Employee_Handbook.pdf halaman 12, ..."
+
+atau
+
+"Informasi tersebut terdapat pada Finance_Report.pdf halaman 5."
+
+Jika informasi berasal dari beberapa dokumen, sebutkan semuanya.
+
+Jika jawaban tidak ditemukan di dalam konteks, katakan:
+
+"Saya tidak menemukan informasi tersebut di dalam dokumen."
 
 KONTEKS:
+
 {context}
-"""),
+"""
+        ),
         ("human", "{question}")
     ])
 
     def format_docs(docs):
-        formatted=[]
+        formatted = []
+
         for doc in docs:
-            source=os.path.basename(doc.metadata.get("source","Unknown"))
-            page=doc.metadata.get("page",0)+1
-            formatted.append(f"Source: {source}\nPage: {page}\n\nContent:\n{doc.page_content}")
+            source = os.path.basename(
+                doc.metadata.get("source", "Unknown")
+            )
+            page = doc.metadata.get("page", 0) + 1
+            content = doc.page_content.strip()
+            formatted.append(
+                f"""
+==========================
+SOURCE : {source}
+PAGE   : {page}
+==========================
+
+{content}
+"""
+            )
+
         return "\n\n".join(formatted)
 
-    rag_chain=(
+    rag_chain = (
         RunnableParallel(
             docs=retriever,
             question=RunnablePassthrough(),
@@ -141,21 +185,23 @@ KONTEKS:
             docs=lambda x: x["docs"],
         )
     )
+
     return rag_chain
+
 
 # ============================================
 # SIDEBAR: UPLOAD DOKUMEN
 # ============================================
 with st.sidebar:
     st.header("📤 Upload Dokumen")
-    
+
     uploaded_files = st.file_uploader(
         "Pilih file PDF",
         type=['pdf'],
         accept_multiple_files=True,
         help="Upload file PDF untuk dianalisis"
     )
-    
+
     if uploaded_files:
         with st.spinner("🔄 Memproses dokumen..."):
             try:
@@ -167,9 +213,11 @@ with st.sidebar:
                 st.success(f"✅ {len(uploaded_files)} Dokumen berhasil diproses!")
             except Exception as e:
                 st.error(f"❌ Error: {e}")
-    
+
     st.markdown("---")
     st.caption("Dibangun dengan LangChain + Groq + ChromaDB")
+
+    selected_file = "All Documents"
 
     if "vector_store" in st.session_state:
         st.markdown("---")
@@ -177,7 +225,7 @@ with st.sidebar:
 
         st.metric(
             "PDF Files",
-            len(uploaded_files)
+            len(uploaded_files) if uploaded_files else 0
         )
 
         st.metric(
@@ -220,30 +268,28 @@ if prompt := st.chat_input("Tanyakan tentang dokumen..."):
     if "rag_chain" not in st.session_state:
         st.warning("⚠️ Silakan upload dokumen terlebih dahulu di sidebar!")
         st.stop()
-    
+
     # Tampilkan pesan user
     with st.chat_message("user"):
         st.write(prompt)
-    
+
     # Simpan pesan user
     st.session_state.messages.append({"role": "user", "content": prompt})
-    
+
     # Proses dengan RAG
     with st.chat_message("assistant"):
         with st.spinner("🔍 Mencari jawaban..."):
             try:
-                result = st.session_state.rag_chain.invoke(prompt)
-
-                answer = result["answer"]
+                chain_result = st.session_state.rag_chain.invoke(prompt)
+                answer = chain_result["answer"]
 
                 if selected_file == "All Documents":
-                    result = st.session_state.vector_store.similarity_search_with_score (
+                    retrieved = st.session_state.vector_store.similarity_search_with_score(
                         prompt,
                         k=3
                     )
-
                 else:
-                    result = st.session_state.vector_store.similarity_search_with_score(
+                    retrieved = st.session_state.vector_store.similarity_search_with_score(
                         prompt,
                         k=3,
                         filter={
@@ -251,16 +297,14 @@ if prompt := st.chat_input("Tanyakan tentang dokumen..."):
                         }
                     )
 
-                    docs = [doc for doc, score in result]
-                
+                docs = [doc for doc, score in retrieved]
+
                 num_docs = len(docs)
 
-                if num_docs >=3:
-                    confidence =  "🟢 High"
-
+                if num_docs >= 3:
+                    confidence = "🟢 High"
                 elif num_docs == 2:
                     confidence = "🟡 Medium"
-
                 else:
                     confidence = "🔴 Low"
 
@@ -268,54 +312,53 @@ if prompt := st.chat_input("Tanyakan tentang dokumen..."):
                 st.caption(f"Confidence : {confidence}")
                 st.divider()
                 st.info(f"📂 Search Scope : {selected_file}")
-                st.subheader("Source Documents")
-                st.success(
-                    f"⭐ Best Match : {os.path.basename(docs[0].metadata.get('source', 'Unknown'))}"
-                    f"(Page {docs[0].metadata.get('page', 0) + 1})"
-                )
 
-                for i, (doc, score) in enumerate (result, start=1):
-                    page = doc.metadata.get("page", "Unknown")
+                if docs:
+                    st.subheader("Source Documents")
+                    best_page = docs[0].metadata.get("page", 0) + 1
+                    st.success(
+                        f"⭐ Best Match : {os.path.basename(docs[0].metadata.get('source', 'Unknown'))} "
+                        f"(Page {best_page})"
+                    )
 
-                    source = doc.metadata.get(
-                        "source",
-                        "Unknown file"
-                    ) 
+                    for i, (doc, score) in enumerate(retrieved, start=1):
+                        page = doc.metadata.get("page", 0)
+                        source = doc.metadata.get("source", "Unknown file")
 
-                    with st.container(border=True):
-                        if i == 1:
-                            st.markdown("### ⭐ Best Match")
-
-                        else:
-                            st.markdown(f"###  Source {i}")
-
-                            st.metric(
-                                "Similarity Score",
-                                f"{score: .4f}"
-                            )
-                        col1, col2 = st.columns([3, 1])
-
-                        with col1:
+                        with st.container(border=True):
                             if i == 1:
-                                st.success(f"🏆 {os.path.basename(source)}")
+                                st.markdown("### ⭐ Best Match")
                             else:
-                                st.info(f"{os.path.basename(source)}")
-                        
-                        with col2:
-                            st.caption("Page")
-                            st.info(f" Page {page + 1}")
+                                st.markdown(f"### Source {i}")
+                                st.metric(
+                                    "Similarity Score",
+                                    f"{score:.4f}"
+                                )
 
-                        st.divider()
+                            col1, col2 = st.columns([3, 1])
 
-                        preview = doc.page_content.strip()
-                        if len(preview) > 300:
-                            preview = preview[:300] + "..."
+                            with col1:
+                                if i == 1:
+                                    st.success(f"🏆 {os.path.basename(source)}")
+                                else:
+                                    st.info(f"{os.path.basename(source)}")
 
-                        st.markdown("**Preview**")
+                            with col2:
+                                st.caption("Page")
+                                st.info(f"Page {page + 1}")
 
-                        st.write(preview)
-                        with st.expander("Show Full Content"):
-                            st.write(doc.page_content)
+                            st.divider()
+
+                            preview = doc.page_content.strip()
+                            if len(preview) > 300:
+                                preview = preview[:300] + "..."
+
+                            st.markdown("**Preview**")
+                            st.write(preview)
+                            with st.expander("Show Full Content"):
+                                st.write(doc.page_content)
+                else:
+                    st.warning("Tidak ada dokumen sumber yang cocok ditemukan.")
 
                 st.session_state.messages.append({
                     "role": "assistant",
@@ -326,6 +369,7 @@ if prompt := st.chat_input("Tanyakan tentang dokumen..."):
 
             except Exception as e:
                 st.error(f"❌ Error: {e}")
+
 # ============================================
 # TOMBOL RESET
 # ============================================
