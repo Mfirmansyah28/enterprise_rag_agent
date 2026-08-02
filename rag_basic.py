@@ -1,20 +1,19 @@
 # app.py - Streamlit UI untuk RAG System
+import streamlit as st
 import os
-import uuid
+from dotenv import load_dotenv
 import tempfile
 
-import streamlit as st
-from dotenv import load_dotenv
-
 # LangChain imports
-from langchain_community.document_loaders import PyPDFLoader
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import Chroma
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.runnables import RunnablePassthrough, RunnableParallel
+from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
-from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_core.runnables import RunnableParallel
 
 # Load environment
 load_dotenv()
@@ -31,7 +30,6 @@ st.set_page_config(
 
 st.title("📚 Enterprise RAG System")
 st.markdown("Upload dokumen dan tanyakan apa saja tentang isinya!")
-
 
 # ============================================
 # FUNGSI RAG
@@ -79,14 +77,11 @@ def load_and_process_documents(uploaded_files):
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
-    persist_dir = os.path.join(
-        tempfile.gettempdir(), f"chroma_db_{uuid.uuid4().hex}"
-    )
-
+    # Vector Store
     vector_store = Chroma.from_documents(
         documents=all_chunks,
         embedding=embeddings,
-        persist_directory=persist_dir
+        persist_directory="./chroma_db_temp"
     )
     vector_store.chunk_count = len(all_chunks)
 
@@ -97,6 +92,30 @@ def load_and_process_documents(uploaded_files):
         }
     )
     return vector_store
+
+
+def format_docs(docs):
+    """Format dokumen dengan metadata source dan page."""
+    formatted = []
+
+    for doc in docs:
+        source = os.path.basename(
+            doc.metadata.get("source", "Unknown")
+        )
+        page = doc.metadata.get("page", 0) + 1
+        content = doc.page_content.strip()
+        formatted.append(
+            f"""
+==========================
+SOURCE : {source}
+PAGE   : {page}
+==========================
+
+{content}
+"""
+        )
+
+    return "\n\n".join(formatted)
 
 
 @st.cache_resource
@@ -110,7 +129,7 @@ def create_rag_chain(_vector_store):
 
     retriever = _vector_store.as_retriever(search_kwargs={"k": 3})
 
-    prompt = ChatPromptTemplate.from_messages([
+    rag_prompt = ChatPromptTemplate.from_messages([
         (
             "system",
             """
@@ -145,28 +164,6 @@ KONTEKS:
         ("human", "{question}")
     ])
 
-    def format_docs(docs):
-        formatted = []
-
-        for doc in docs:
-            source = os.path.basename(
-                doc.metadata.get("source", "Unknown")
-            )
-            page = doc.metadata.get("page", 0) + 1
-            content = doc.page_content.strip()
-            formatted.append(
-                f"""
-==========================
-SOURCE : {source}
-PAGE   : {page}
-==========================
-
-{content}
-"""
-            )
-
-        return "\n\n".join(formatted)
-
     rag_chain = (
         RunnableParallel(
             docs=retriever,
@@ -178,7 +175,7 @@ PAGE   : {page}
                     "context": lambda x: format_docs(x["docs"]),
                     "question": lambda x: x["question"],
                 }
-                | prompt
+                | rag_prompt
                 | llm
                 | StrOutputParser()
             ),
@@ -188,10 +185,12 @@ PAGE   : {page}
 
     return rag_chain
 
-
 # ============================================
 # SIDEBAR: UPLOAD DOKUMEN
 # ============================================
+# Inisialisasi selected_file dengan default value
+selected_file = "All Documents"
+
 with st.sidebar:
     st.header("📤 Upload Dokumen")
 
@@ -216,8 +215,6 @@ with st.sidebar:
 
     st.markdown("---")
     st.caption("Dibangun dengan LangChain + Groq + ChromaDB")
-
-    selected_file = "All Documents"
 
     if "vector_store" in st.session_state:
         st.markdown("---")
@@ -262,8 +259,8 @@ for message in st.session_state.messages:
     with st.chat_message(message["role"]):
         st.write(message["content"])
 
-# Input chat
-if prompt := st.chat_input("Tanyakan tentang dokumen..."):
+# Input chat — gunakan nama variabel berbeda dari ChatPromptTemplate
+if user_input := st.chat_input("Tanyakan tentang dokumen..."):
     # Cek apakah ada dokumen yang sudah diupload
     if "rag_chain" not in st.session_state:
         st.warning("⚠️ Silakan upload dokumen terlebih dahulu di sidebar!")
@@ -271,33 +268,35 @@ if prompt := st.chat_input("Tanyakan tentang dokumen..."):
 
     # Tampilkan pesan user
     with st.chat_message("user"):
-        st.write(prompt)
+        st.write(user_input)
 
     # Simpan pesan user
-    st.session_state.messages.append({"role": "user", "content": prompt})
+    st.session_state.messages.append({"role": "user", "content": user_input})
 
     # Proses dengan RAG
     with st.chat_message("assistant"):
         with st.spinner("🔍 Mencari jawaban..."):
             try:
-                chain_result = st.session_state.rag_chain.invoke(prompt)
-                answer = chain_result["answer"]
+                result = st.session_state.rag_chain.invoke(user_input)
 
+                answer = result["answer"]
+
+                # Similarity search berdasarkan filter dokumen
                 if selected_file == "All Documents":
-                    retrieved = st.session_state.vector_store.similarity_search_with_score(
-                        prompt,
+                    search_result = st.session_state.vector_store.similarity_search_with_score(
+                        user_input,
                         k=3
                     )
                 else:
-                    retrieved = st.session_state.vector_store.similarity_search_with_score(
-                        prompt,
+                    search_result = st.session_state.vector_store.similarity_search_with_score(
+                        user_input,
                         k=3,
                         filter={
                             "source": selected_file
                         }
                     )
 
-                docs = [doc for doc, score in retrieved]
+                docs = [doc for doc, score in search_result]
 
                 num_docs = len(docs)
 
@@ -312,17 +311,16 @@ if prompt := st.chat_input("Tanyakan tentang dokumen..."):
                 st.caption(f"Confidence : {confidence}")
                 st.divider()
                 st.info(f"📂 Search Scope : {selected_file}")
+                st.subheader("Source Documents")
 
                 if docs:
-                    st.subheader("Source Documents")
-                    best_page = docs[0].metadata.get("page", 0) + 1
                     st.success(
-                        f"⭐ Best Match : {os.path.basename(docs[0].metadata.get('source', 'Unknown'))} "
-                        f"(Page {best_page})"
+                        f"⭐ Best Match : {os.path.basename(docs[0].metadata.get('source', 'Unknown'))}"
+                        f" (Page {docs[0].metadata.get('page', 0) + 1})"
                     )
 
-                    for i, (doc, score) in enumerate(retrieved, start=1):
-                        page = doc.metadata.get("page", 0)
+                    for i, (doc, score) in enumerate(search_result, start=1):
+                        page = doc.metadata.get("page", "Unknown")
                         source = doc.metadata.get("source", "Unknown file")
 
                         with st.container(border=True):
@@ -330,10 +328,11 @@ if prompt := st.chat_input("Tanyakan tentang dokumen..."):
                                 st.markdown("### ⭐ Best Match")
                             else:
                                 st.markdown(f"### Source {i}")
-                                st.metric(
-                                    "Similarity Score",
-                                    f"{score:.4f}"
-                                )
+
+                            st.metric(
+                                "Similarity Score",
+                                f"{score:.4f}"
+                            )
 
                             col1, col2 = st.columns([3, 1])
 
@@ -345,7 +344,10 @@ if prompt := st.chat_input("Tanyakan tentang dokumen..."):
 
                             with col2:
                                 st.caption("Page")
-                                st.info(f"Page {page + 1}")
+                                if isinstance(page, int):
+                                    st.info(f"Page {page + 1}")
+                                else:
+                                    st.info(f"Page {page}")
 
                             st.divider()
 
@@ -355,10 +357,11 @@ if prompt := st.chat_input("Tanyakan tentang dokumen..."):
 
                             st.markdown("**Preview**")
                             st.write(preview)
+
                             with st.expander("Show Full Content"):
                                 st.write(doc.page_content)
                 else:
-                    st.warning("Tidak ada dokumen sumber yang cocok ditemukan.")
+                    st.warning("Tidak ada dokumen yang ditemukan untuk query ini.")
 
                 st.session_state.messages.append({
                     "role": "assistant",

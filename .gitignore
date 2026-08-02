@@ -6,3 +6,6 @@ venv/
 
 # ChromaDB
 chroma_db_temp
+
+# Streamlit local config
+.streamlit/
