@@ -1,24 +1,16 @@
-streamlit==1.59.2
+streamlit==1.46.1
 
-python-dotenv==1.1.1
+python-dotenv==1.0.1
 
 langchain==0.3.27
 langchain-core==0.3.75
 langchain-community==0.3.29
 langchain-text-splitters==0.3.9
-langchain-groq==0.3.8
-langchain-huggingface==0.3.1
 
-sentence-transformers==5.1.2
-transformers==4.57.1
+langchain-groq==0.3.8
 
 chromadb==1.5.9
 
-fastembed==0.7.3
+sentence-transformers==5.1.2
 
 pypdf==6.0.0
-
-langsmith==0.4.21
-datasets==4.0.0
-
-ragas==0.3.0
