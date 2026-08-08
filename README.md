@@ -107,3 +107,5 @@ enterprise-rag-agent/
 - Direktori `chroma_db_temp/` dibuat secara otomatis saat dokumen pertama diproses. Direktori ini dapat dihapus untuk mereset seluruh data vektor.
 - File `.env` tidak boleh di-commit ke repositori publik. Pastikan sudah terdaftar di `.gitignore`.
 - Pada penggunaan pertama, model embedding `all-MiniLM-L6-v2` akan diunduh secara otomatis oleh `sentence-transformers`. Pastikan koneksi internet tersedia.
+
+Link Demo:[https://enterpriseragagent-nyeclrndfwz7cvo5y3a43w.streamlit.app/]
